@@ -19,16 +19,36 @@ resource "aws_launch_template" "app" {
     security_groups             = [var.ssh_sg_id, var.private_http_sg_id]
   }
 
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "optional"
+    http_put_response_hop_limit = 2
+  }
+
   user_data = base64encode(<<-EOF
               #!/bin/bash
               dnf update -y || yum update -y
               dnf install -y httpd || yum install -y httpd
               systemctl start httpd
               systemctl enable httpd
+              
               TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
               INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-              AVAILABILITY_ZONE=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
-              echo "<h1>Application Deployed with Terraform</h1><p>Instance ID: $INSTANCE_ID</p><p>Availability Zone: $AVAILABILITY_ZONE</p>" > /var/www/html/index.html
+              if [ -z "$INSTANCE_ID" ]; then
+                INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+              fi
+              
+              cat <<HTML > /var/www/html/index.html
+              <!DOCTYPE html>
+              <html>
+              <head><title>App</title></head>
+              <body>
+                <h1>Application Instance</h1>
+                <p>Instance ID: $INSTANCE_ID</p>
+                <p>UUID: $INSTANCE_ID</p>
+              </body>
+              </html>
+              HTML
               EOF
   )
 
@@ -50,11 +70,16 @@ resource "aws_lb_target_group" "app" {
   protocol = "HTTP"
   vpc_id   = var.vpc_id
 
+  stickiness {
+    enabled = false
+    type    = "lb_cookie"
+  }
+
   health_check {
     path                = "/"
     protocol            = "HTTP"
     matcher             = "200"
-    interval            = 15
+    interval            = 10
     timeout             = 5
     healthy_threshold   = 2
     unhealthy_threshold = 2
@@ -94,6 +119,7 @@ resource "aws_autoscaling_group" "app" {
   min_size            = var.min_size
   max_size            = var.max_size
   desired_capacity    = var.desired_capacity
+  target_group_arns   = [aws_lb_target_group.app.arn]
 
   launch_template {
     id      = aws_launch_template.app.id
