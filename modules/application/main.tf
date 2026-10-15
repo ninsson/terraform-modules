@@ -21,23 +21,21 @@ resource "aws_launch_template" "app" {
 
   user_data = base64encode(<<EOF
 #!/bin/bash
-# Brak 'yum update' - instalujemy od razu, maszyna wstaje w kilka sekund
 yum install -y httpd
 
 echo "KeepAlive Off" >> /etc/httpd/conf/httpd.conf
 systemctl start httpd
 systemctl enable httpd
 
-# Błyskawiczny, 100% unikalny identyfikator bez opóźnień sieciowych
-UUID=$$(cat /proc/sys/kernel/random/uuid)
+UUID=$(cat /proc/sys/kernel/random/uuid)
 
 cat <<HTML > /var/www/html/index.html
 <!DOCTYPE html>
 <html>
 <body>
   <h1>Application Instance</h1>
-  <p>Instance ID: $$UUID</p>
-  <p>UUID: $$UUID</p>
+  <p>Instance ID: $UUID</p>
+  <p>UUID: $UUID</p>
 </body>
 </html>
 HTML
@@ -67,7 +65,7 @@ resource "aws_lb_target_group" "app" {
     type    = "lb_cookie"
   }
 
-  # Najbardziej agresywne sprawdzanie zdrowia - instancja gotowa w 10 sekund
+  # Aggressive health check - instance ready within ~10 seconds
   health_check {
     path                = "/"
     protocol            = "HTTP"
