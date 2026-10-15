@@ -19,47 +19,26 @@ resource "aws_launch_template" "app" {
     security_groups             = [var.ssh_sg_id, var.private_http_sg_id]
   }
 
-  metadata_options {
-    http_endpoint               = "enabled"
-    http_tokens                 = "optional"
-    http_put_response_hop_limit = 2
-  }
-
-  user_data = base64encode(<<-USERDATA
+  user_data = base64encode(<<USERDATA
 #!/bin/bash
-dnf update -y || yum update -y
-dnf install -y httpd || yum install -y httpd
-
-# Wygeneruj unikalny identyfikator instancji
-UUID_VAL=$(cat /proc/sys/kernel/random/uuid 2>/dev/null || cat /etc/machine-id 2>/dev/null)
-
-TOKEN=$(curl -s -f -m 3 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-if [ -n "$TOKEN" ]; then
-  INSTANCE_ID=$(curl -s -f -m 3 -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-  AZ=$(curl -s -f -m 3 -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
-else
-  INSTANCE_ID=$(curl -s -f -m 3 http://169.254.169.254/latest/meta-data/instance-id)
-  AZ=$(curl -s -f -m 3 http://169.254.169.254/latest/meta-data/placement/availability-zone)
-fi
-
-[ -z "$INSTANCE_ID" ] && INSTANCE_ID="$UUID_VAL"
-
-cat <<HTML > /var/www/html/index.html
-<!DOCTYPE html>
-<html>
-<head><title>App</title></head>
-<body>
-  <h1>Application Instance</h1>
-  <p>Instance ID: $${INSTANCE_ID}</p>
-  <p>Availability Zone: $${AZ}</p>
-  <p>UUID: $${UUID_VAL}</p>
-  <p>$${INSTANCE_ID}</p>
-</body>
-</html>
-HTML
-
+dnf update -y
+dnf install -y httpd
 systemctl start httpd
 systemctl enable httpd
+
+# Pobranie metadanych. Podwójne $$ ukrywają zmienne przed Terraformem!
+TOKEN=$$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+I_ID=$$(curl -s -H "X-aws-ec2-metadata-token: $$TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+AZ=$$(curl -s -H "X-aws-ec2-metadata-token: $$TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+
+# Gwarancja absolutnie unikalnego ID, nawet gdyby API AWS miało opóźnienie
+if [ -z "$$I_ID" ]; then
+  I_ID=$$(cat /proc/sys/kernel/random/uuid)
+fi
+
+echo "<h1>Application Environment</h1>" > /var/www/html/index.html
+echo "<p>Instance ID: $$I_ID</p>" >> /var/www/html/index.html
+echo "<p>Availability Zone: $$AZ</p>" >> /var/www/html/index.html
 USERDATA
   )
 
@@ -76,11 +55,10 @@ USERDATA
 }
 
 resource "aws_lb_target_group" "app" {
-  name                 = var.tg_name
-  port                 = 80
-  protocol             = "HTTP"
-  vpc_id               = var.vpc_id
-  deregistration_delay = 5
+  name     = var.tg_name
+  port     = 80
+  protocol = "HTTP"
+  vpc_id   = var.vpc_id
 
   stickiness {
     enabled = false
@@ -90,10 +68,9 @@ resource "aws_lb_target_group" "app" {
   health_check {
     path                = "/"
     protocol            = "HTTP"
-    port                = "80"
     matcher             = "200"
-    interval            = 5
-    timeout             = 2
+    interval            = 10
+    timeout             = 5
     healthy_threshold   = 2
     unhealthy_threshold = 2
   }
@@ -132,8 +109,6 @@ resource "aws_autoscaling_group" "app" {
   min_size            = var.min_size
   max_size            = var.max_size
   desired_capacity    = var.desired_capacity
-  target_group_arns   = [aws_lb_target_group.app.arn]
-  health_check_type   = "ELB"
 
   launch_template {
     id      = aws_launch_template.app.id
