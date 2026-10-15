@@ -19,27 +19,44 @@ resource "aws_launch_template" "app" {
     security_groups             = [var.ssh_sg_id, var.private_http_sg_id]
   }
 
-  user_data = base64encode(<<USERDATA
+  metadata_options {
+    http_endpoint               = "enabled"
+    http_tokens                 = "optional"
+    http_put_response_hop_limit = 2
+  }
+
+  user_data = base64encode(<<EOF
 #!/bin/bash
-dnf update -y
-dnf install -y httpd
+dnf update -y || yum update -y
+dnf install -y httpd || yum install -y httpd
+
+# Wymuszenie braku cacheowania polaczen TCP
+echo "KeepAlive Off" >> /etc/httpd/conf/httpd.conf
 systemctl start httpd
 systemctl enable httpd
 
-# Pobranie metadanych. Podwójne $$ ukrywają zmienne przed Terraformem!
 TOKEN=$$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-I_ID=$$(curl -s -H "X-aws-ec2-metadata-token: $$TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
-AZ=$$(curl -s -H "X-aws-ec2-metadata-token: $$TOKEN" http://169.254.169.254/latest/meta-data/placement/availability-zone)
+INSTANCE_ID=$$(curl -s -H "X-aws-ec2-metadata-token: $$TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
 
-# Gwarancja absolutnie unikalnego ID, nawet gdyby API AWS miało opóźnienie
-if [ -z "$$I_ID" ]; then
-  I_ID=$$(cat /proc/sys/kernel/random/uuid)
+if [ -z "$$INSTANCE_ID" ]; then
+  INSTANCE_ID=$$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
 fi
 
-echo "<h1>Application Environment</h1>" > /var/www/html/index.html
-echo "<p>Instance ID: $$I_ID</p>" >> /var/www/html/index.html
-echo "<p>Availability Zone: $$AZ</p>" >> /var/www/html/index.html
-USERDATA
+if [ -z "$$INSTANCE_ID" ]; then
+  INSTANCE_ID=$$(cat /proc/sys/kernel/random/uuid)
+fi
+
+cat <<HTML > /var/www/html/index.html
+<!DOCTYPE html>
+<html>
+<body>
+  <h1>Application Instance</h1>
+  <p>Instance ID: $$INSTANCE_ID</p>
+  <p>UUID: $$INSTANCE_ID</p>
+</body>
+</html>
+HTML
+EOF
   )
 
   tag_specifications {
@@ -109,6 +126,11 @@ resource "aws_autoscaling_group" "app" {
   min_size            = var.min_size
   max_size            = var.max_size
   desired_capacity    = var.desired_capacity
+
+  target_group_arns         = [aws_lb_target_group.app.arn]
+  health_check_type         = "ELB"
+  min_elb_capacity          = 2
+  wait_for_capacity_timeout = "5m"
 
   launch_template {
     id      = aws_launch_template.app.id
