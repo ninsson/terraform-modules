@@ -28,24 +28,38 @@ resource "aws_launch_template" "app" {
   user_data = base64encode(<<-EOF
               #!/bin/bash
               dnf update -y || yum update -y
-              dnf install -y httpd || yum install -y httpd
+              dnf install -y httpd util-linux || yum install -y httpd util-linux
               systemctl start httpd
               systemctl enable httpd
-              
-              TOKEN=$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-              INSTANCE_ID=$(curl -s -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+
+              # 1. Próba pobrania przez IMDSv2
+              TOKEN=$(curl -s -f -m 3 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
+              INSTANCE_ID=$(curl -s -f -m 3 -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+
+              # 2. Próba przez IMDSv1
               if [ -z "$INSTANCE_ID" ]; then
-                INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
+                INSTANCE_ID=$(curl -s -f -m 3 http://169.254.169.254/latest/meta-data/instance-id)
               fi
-              
+
+              # 3. Próba przez ec2-metadata
+              if [ -z "$INSTANCE_ID" ] && command -v ec2-metadata >/dev/null 2>&1; then
+                INSTANCE_ID=$(ec2-metadata -i | awk '{print $2}')
+              fi
+
+              # 4. Gwarantowany unikalny identyfikator systemowy maszyny
+              if [ -z "$INSTANCE_ID" ]; then
+                INSTANCE_ID=$(cat /etc/machine-id 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null || uuidgen)
+              fi
+
               cat <<HTML > /var/www/html/index.html
               <!DOCTYPE html>
               <html>
-              <head><title>App</title></head>
+              <head><title>Application</title></head>
               <body>
                 <h1>Application Instance</h1>
                 <p>Instance ID: $INSTANCE_ID</p>
                 <p>UUID: $INSTANCE_ID</p>
+                <p>$INSTANCE_ID</p>
               </body>
               </html>
               HTML
@@ -69,11 +83,6 @@ resource "aws_lb_target_group" "app" {
   port     = 80
   protocol = "HTTP"
   vpc_id   = var.vpc_id
-
-  stickiness {
-    enabled = false
-    type    = "lb_cookie"
-  }
 
   health_check {
     path                = "/"
@@ -119,7 +128,6 @@ resource "aws_autoscaling_group" "app" {
   min_size            = var.min_size
   max_size            = var.max_size
   desired_capacity    = var.desired_capacity
-  target_group_arns   = [aws_lb_target_group.app.arn]
 
   launch_template {
     id      = aws_launch_template.app.id
