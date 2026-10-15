@@ -25,7 +25,7 @@ resource "aws_launch_template" "app" {
     http_put_response_hop_limit = 2
   }
 
-  user_data = base64encode(<<-'USERDATA'
+  user_data = base64encode(<<-USERDATA
 #!/bin/bash
 dnf update -y || yum update -y
 dnf install -y httpd || yum install -y httpd
@@ -45,18 +45,10 @@ if [ -z "$INSTANCE_ID" ]; then
   INSTANCE_ID=$(cat /etc/machine-id 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null)
 fi
 
-cat <<HTML > /var/www/html/index.html
-<!DOCTYPE html>
-<html>
-<head><title>App</title></head>
-<body>
-  <h1>Application Instance</h1>
-  <p>Instance ID: ${INSTANCE_ID}</p>
-  <p>Availability Zone: ${AZ}</p>
-  <p>UUID: ${INSTANCE_ID}</p>
-</body>
-</html>
-HTML
+echo "<h1>Application Instance</h1>" > /var/www/html/index.html
+echo "<p>Instance ID: $${INSTANCE_ID}</p>" >> /var/www/html/index.html
+echo "<p>Availability Zone: $${AZ}</p>" >> /var/www/html/index.html
+echo "<p>UUID: $${INSTANCE_ID}</p>" >> /var/www/html/index.html
 USERDATA
   )
 
