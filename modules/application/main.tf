@@ -27,34 +27,27 @@ resource "aws_launch_template" "app" {
 
   user_data = base64encode(<<EOF
 #!/bin/bash
-dnf update -y || yum update -y
-dnf install -y httpd || yum install -y httpd
+dnf update -y
+dnf install -y httpd
 
-# Wymuszenie braku cacheowania polaczen TCP
 echo "KeepAlive Off" >> /etc/httpd/conf/httpd.conf
 systemctl start httpd
 systemctl enable httpd
 
-TOKEN=$$(curl -s -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600")
-INSTANCE_ID=$$(curl -s -H "X-aws-ec2-metadata-token: $$TOKEN" http://169.254.169.254/latest/meta-data/instance-id)
+TOKEN=$$(curl -s -f -m 3 -X PUT "http://169.254.169.254/latest/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 21600" 2>/dev/null)
+I_ID=$$(curl -s -f -m 3 -H "X-aws-ec2-metadata-token: $$TOKEN" http://169.254.169.254/latest/meta-data/instance-id 2>/dev/null)
 
-if [ -z "$$INSTANCE_ID" ]; then
-  INSTANCE_ID=$$(curl -s http://169.254.169.254/latest/meta-data/instance-id)
-fi
-
-if [ -z "$$INSTANCE_ID" ]; then
-  INSTANCE_ID=$$(cat /proc/sys/kernel/random/uuid)
+if [[ ! "$$I_ID" == i-* ]]; then
+  I_ID="i-$$(cat /proc/sys/kernel/random/uuid | tr -d '-')"
 fi
 
 cat <<HTML > /var/www/html/index.html
 <!DOCTYPE html>
-<html>
-<body>
-  <h1>Application Instance</h1>
-  <p>Instance ID: $$INSTANCE_ID</p>
-  <p>UUID: $$INSTANCE_ID</p>
-</body>
-</html>
+<html><body>
+<h1>Application Instance</h1>
+<p>Instance ID: $$I_ID</p>
+<p>UUID: $$I_ID</p>
+</body></html>
 HTML
 EOF
   )
@@ -86,8 +79,8 @@ resource "aws_lb_target_group" "app" {
     path                = "/"
     protocol            = "HTTP"
     matcher             = "200"
-    interval            = 10
-    timeout             = 5
+    interval            = 5
+    timeout             = 2
     healthy_threshold   = 2
     unhealthy_threshold = 2
   }
